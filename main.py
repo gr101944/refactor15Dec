@@ -169,14 +169,52 @@ def create_text_splitter(chunk_size, chunk_overlap):
     chunk_overlap=chunk_overlap,
     length_function=len,
 )
+class Document:
+    def __init__(self, page_content, metadata):
+        self.page_content = page_content
+        self.metadata = metadata
+
+def transform_source_to_target(source_data):
+    matches = source_data.get('matches', [])
+    
+    target_documents = []
+    for match in matches:
+        metadata = match.get('metadata', {})
+        document = Document(page_content=metadata.get('text', ''), metadata={
+            'access': metadata.get('access', ''),
+            'file_path': metadata.get('file_path', ''),
+            'repo': metadata.get('repo', '')
+        })
+        target_documents.append(document)
+    
+    return target_documents
+class Document:
+    def __init__(self, page_content, metadata):
+        self.page_content = page_content
+        self.metadata = metadata
+def extract_distinct_file_paths(documents):
+    file_paths = set()
+    meta_data_present = False
+
+    for doc in documents:
+        if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict) and "file_path" in doc.metadata:
+            file_paths.add(doc.metadata["file_path"])
+            meta_data_present = True
+
+    return file_paths, meta_data_present
+def transform_format_a_to_b(format_a):
+    documents = []
+    for match in format_a['matches']:
+        page_content = match['metadata']['text']
+        metadata = {key: value for key, value in match['metadata'].items() if key != 'text'}
+        documents.append(Document(page_content, metadata))
+    return documents
     
 
+def search_vector_store3 (persistence_choice, index_name, user_input, model, source, k_similarity, promptId_random, kr_repos_chosen):
+    print ('In search_vector_store3', kr_repos_chosen)
     
-
-def search_vector_store3 (persistence_choice, VectorStore, user_input, model, source, k_similarity, promptId_random):
-    print ('In search_vector_store3', model)
-    print ("k_similarity ", k_similarity)
-    print ("persistence_choice ", persistence_choice)
+    
     from langchain.chat_models import ChatOpenAI
     from langchain.callbacks import get_openai_callback
 
@@ -204,9 +242,59 @@ def search_vector_store3 (persistence_choice, VectorStore, user_input, model, so
  
     result = ' '.join(chat_history_upload[:n]) if n <= total_elements else ' '.join(chat_history_upload)
     print (result)
-    print ("before docs")  
-    docs = VectorStore.similarity_search(query=result, k=k_similarity)
-    distinct_file_paths, meta_data_present = extract_distinct_file_paths(docs)
+    print ("before docs") 
+    dotenv.load_dotenv(".env")
+    env_vars = dotenv.dotenv_values()
+    for key in env_vars:
+        os.environ[key] = env_vars[key]
+    pinecone.init (
+        api_key = os.getenv('PINECONE_API_KEY'),
+        environment = os.getenv('PINECONE_ENVIRONMENT')   
+    )
+    pinecone_index_name = os.getenv('PINECONE_INDEX_NAME')
+
+    index_name = pinecone_index_name
+    print (index_name)
+    index = pinecone.Index(index_name)
+    MODEL = "text-embedding-ada-002"
+
+    print (result)
+    prompt_embedding  = openai.Embedding.create(input=result, engine=MODEL)['data'][0]['embedding']
+
+    print ("embedding created")
+    # prompt_embedding = embed.create(input=result, engine=MODEL)['data'][0]['embedding']
+    # prompt_embedding = Pinecone(
+    #     index, embed.embed_query, result
+    # )
+    similarity_search_result = index.query(
+        [prompt_embedding],
+        top_k=k_similarity,
+        include_metadata=True
+    )
+    print (similarity_search_result)
+    formatted_documents = transform_format_a_to_b(similarity_search_result)
+    print ("formatted_documents")
+    print (formatted_documents)
+
+    
+
+        
+    # print (res['matches'][0]['metadata']['text'])
+    # Extracting text from the 'matches' list
+    # text_list = [match['metadata']['text'] for match in res['matches']]
+
+    # # Combining the extracted text into a single string (you can modify this based on your needs)
+    # all_text = ' '.join(text_list)
+
+    # Printing the result
+    # print(all_text)
+    # for match in res['matches']:
+    #     print(f"{match['score']:.2f}: {match['metadata']['text']}")
+        # docs_matched = 
+    # print (docs)
+
+    # docs = VectorStore.similarity_search(query=result, k=k_similarity)
+ 
 
 
     prompt = PromptTemplate(
@@ -219,7 +307,8 @@ def search_vector_store3 (persistence_choice, VectorStore, user_input, model, so
             llm=llm, chain_type="stuff", memory=memory , prompt=prompt
         )
     with get_openai_callback() as cb:
-        response  = chain({"input_documents": docs, "user_input": user_input}, return_only_outputs=True)
+        response  = chain({"input_documents": formatted_documents, "user_input": user_input}, return_only_outputs=True)
+        print ("response**********************************************")
         print (response)
         input_tokens = cb.prompt_tokens
         output_tokens = cb.completion_tokens
@@ -262,13 +351,13 @@ def search_vector_store3 (persistence_choice, VectorStore, user_input, model, so
     if "I don't know" in response or response == None:       
         st.write('Info not in artefact...') 
     print ("Checking...")
-    print (distinct_file_paths)
-    print (meta_data_present)
+    distinct_file_paths, meta_data_present = extract_distinct_file_paths(formatted_documents)
+
     if meta_data_present:
         data = {
             "source": source,
             "response": response,
-            "distinct_file_paths" : list (distinct_file_paths )        
+            "distinct_file_paths" : list (distinct_file_paths )       
         }
     else:
         
@@ -459,10 +548,10 @@ def process_YTLinks(youtube_video_url, user_input, promptId_random):
             except pinecone.exceptions.PineconeException as e:
                 print(f"An error occurred: {str(e)}")
 
-            embeddings = OpenAIEmbeddings()        
-            docsearch = Pinecone.from_texts([t.page_content for t in chunks], embeddings, index_name=index_name)
+            # embeddings = OpenAIEmbeddings()        
+            # docsearch = Pinecone.from_texts([t.page_content for t in chunks], embeddings, index_name=index_name)
             persistence_choice = "Pinecone"
-            resp_YT = search_vector_store3 (persistence_choice, docsearch, user_input, model, "YouTube", k_similarity, promptId_random)
+            resp_YT = search_vector_store3 (persistence_choice, index_name, user_input, model, "YouTube", k_similarity, promptId_random, kr_repos_chosen)
        
             data_dict = json.loads(resp_YT)
             # Extracting the 'output_text' from the dictionary
@@ -489,20 +578,54 @@ def append_metadata(documents, file_path, ingest_source_chosen):
         doc.metadata["access"] = "public"
         doc.metadata["repo"] = ingest_source_chosen
 
-def print_documents(documents):
-    for doc in documents:
-        print(f"Document(page_content='{doc.page_content}', metadata={doc.metadata}),")
+# def print_documents(documents):
+#     for doc in documents:
+#         print(f"Document(page_content='{doc.page_content}', metadata={doc.metadata}),")
         
-def extract_distinct_file_paths(documents):
-    file_paths = set()
-    meta_data_present = False
+# def extract_distinct_file_paths2(docs):
+#     distinct_file_paths = set()
+#     meta_data_present = False
 
-    for doc in documents:
-        if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict) and "file_path" in doc.metadata:
-            file_paths.add(doc.metadata["file_path"])
-            meta_data_present = True
+#     for match in docs.get('matches', []):
+#         file_path = match.get('metadata', {}).get('file_path', '')
+#         if file_path:
+#             distinct_file_paths.add(file_path)
+#             meta_data_present = True
 
-    return file_paths, meta_data_present
+#     return list(distinct_file_paths), meta_data_present
+        
+# def extract_distinct_file_paths(documents):
+#     file_paths = set()
+#     meta_data_present = False
+
+#     for doc in documents:
+#         if hasattr(doc, 'metadata') and isinstance(doc.metadata, dict) and "file_path" in doc.metadata:
+#             file_paths.add(doc.metadata["file_path"])
+#             meta_data_present = True
+
+#     return file_paths, meta_data_present
+
+# def format_file_paths(similarity_matches):
+#     unique_file_paths = set()
+#     formatted_paths = ""
+
+#     for match in similarity_matches.get('matches', []):
+#         meta = match.get('metadata')
+#         if meta and 'file_path' in meta:
+#             file_path = meta['file_path']
+#             if file_path not in unique_file_paths:
+#                 unique_file_paths.add(file_path)
+
+#     has_file_paths = bool(unique_file_paths)
+    
+#     formatted_paths += 'source: '
+#     if len(unique_file_paths) <= 3:
+#         formatted_paths += ', '.join(unique_file_paths)
+#     else:
+#         formatted_paths += ', '.join(list(unique_file_paths)[:3])
+#         formatted_paths += ', more...'
+
+#     return formatted_paths, has_file_paths
 
 def process_pdf_file(file_content, file_path, ingest_source_chosen):
     print ('process_pdf_file')
@@ -700,7 +823,6 @@ def process_knowledge_base(prompt, model, Conversation, kr_repos_chosen, promptI
         environment = os.getenv('PINECONE_ENVIRONMENT')   
     )
     pinecone_index_name = os.getenv('PINECONE_INDEX_NAME')
-
     
     OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
     text_field = "text"
@@ -710,13 +832,11 @@ def process_knowledge_base(prompt, model, Conversation, kr_repos_chosen, promptI
         openai_api_key=OPENAI_API_KEY
     )
     index_name = pinecone_index_name
-    index = pinecone.Index(index_name)
+    # pinecone_index = pinecone.Index(index_name)
 
-    vectorstore = Pinecone(
-        index, embed.embed_query, text_field
-    )
+ 
     # Rajesh change
-    resp = search_vector_store3 (persistence_choice, vectorstore, prompt, model, "KR", k_similarity, promptId_random)
+    resp = search_vector_store3 (persistence_choice, index_name, prompt, model, "KR", k_similarity, promptId_random, kr_repos_chosen)
 
     return resp
     
